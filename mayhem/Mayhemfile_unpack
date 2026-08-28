@@ -1,0 +1,39 @@
+# Target `upx-unpack` -- the UNPACKER. Companion to mayhem/Mayhemfile (target `upx`, the packer,
+# whose historical name and cmd shape are preserved for run-history continuity). This is an ADDITIVE
+# second target, not a replacement: UPX's own unpacker / executable-format-detection code is the
+# historically more productive fuzz surface (8 known defects there: OOB read, improper input
+# validation, uncaught exception).
+#
+# Like the packer it is now an in-process libFuzzer harness (mayhem/upx_fuzz.cpp, built with
+# -DUPX_FUZZ_UNPACK=1) rather than a raw file-input CLI target -- see mayhem/Mayhemfile for why the
+# raw form could not work for UPX and produced the 155-edge run #4. Measured locally, 60s, one core:
+# 201,388 execs (3,301 exec/s), cov 3,082 edges, corpus 1 -> 337 inputs.
+# Reproduce a finding with /mayhem/upx-unpack-standalone <input>, or with the plain CLI:
+# /mayhem/upx-cli -d --force-overwrite -o /tmp/out <input>.
+project: savantenvs/upx
+target: upx-unpack
+
+# One local seed: mayhem/upx-unpack/testsuite/tiny.packed, the 5352-byte result of packing this
+# repo's `tiny` ELF with `upx --best --lzma`. A packed executable is required to get past UPX's
+# format-detection gate at all; the mutated bytes downstream of that gate (header fields, compressed
+# payload, filter/checksum data) are exactly what drives the unpacker's parsing code.
+#
+# A second seed (hello.packed, a 275312-byte packed static glibc binary) was DROPPED after
+# measuring it: 60s on hello.packed alone reached cov 2,606 at 255 exec/s and grew a 69 MB corpus,
+# while the same 60s on tiny.packed alone reached cov 3,120 at 2,425 exec/s with a 2 MB corpus.
+# The large seed forces every mutation to carry ~275 KB of payload, so it bought strictly less
+# coverage for ~10x the cost per execution; it also required max_length >= 275312, which pulled the
+# whole corpus up with it.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx-unpack/testsuite
+
+cmds:
+  - cmd: /mayhem/upx-unpack
+    libfuzzer: true
+    # Above libFuzzer's 4096-byte default and comfortably above the 5352-byte seed, so mutations can
+    # grow the packed image without being truncated into instant rejects.
+    max_length: 65536
+    # Bounds ONE execution (libFuzzer's own default is 1200s). Decompression is cheap -- measured
+    # slowest unit <1s -- so this is purely a stall guard.
+    timeout: 30

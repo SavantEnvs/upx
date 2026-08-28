@@ -1,0 +1,37 @@
+# Target `upx-test` -- `upx -t`, which decompresses a packed file IN MEMORY and verifies it, with
+# no output file. This is one of the three harnesses OSS-Fuzz builds for this project
+# (projects/upx/fuzzers/test_packed_file_fuzzer.cpp); SPEC 6.2 item 12 requires an OSS-Fuzz project
+# to ship all of them, and verify-repo cannot auto-enumerate this project's fuzzer list (its
+# build.sh loops over `$OUT/${fuzz_basename}`), so parity was established by hand against
+# google/oss-fuzz projects/upx/fuzzers/.
+#
+# Distinct from `upx-unpack` (`-d`): the verify path checks the decompressed image against the
+# stored checksums and never writes a file, so it reaches validation code that the write path
+# short-circuits.
+#
+# Like every target in this repo it is an in-process libFuzzer harness (mayhem/upx_fuzz.cpp, built
+# with -DUPX_FUZZ_MODE=UPX_FUZZ_MODE_TEST) rather than a raw file-input CLI target -- see
+# mayhem/Mayhemfile for why the raw form cannot work for UPX and produced the 155-edge run #4.
+# Measured locally, 60s, one core: 177,683 execs (2,912 exec/s), cov 3,130 edges, corpus 1 -> 328.
+# Reproduce a finding with /mayhem/upx-test-standalone <input>, or with the plain CLI:
+# /mayhem/upx-cli -t <input>.
+project: savantenvs/upx
+target: upx-test
+
+# The 5352-byte result of packing this repo's `tiny` ELF with `upx --best --lzma`. A packed
+# executable is required to get past UPX's format-detection gate at all; the mutated bytes
+# downstream of that gate (header fields, compressed payload, filter/checksum data) are what drive
+# the verify path.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx-test/testsuite
+
+cmds:
+  - cmd: /mayhem/upx-test
+    libfuzzer: true
+    # Above libFuzzer's 4096-byte default and comfortably above the 5352-byte seed, so mutations can
+    # grow the packed image without being truncated into instant rejects.
+    max_length: 65536
+    # Bounds ONE execution (libFuzzer's own default is 1200s). Verifying is cheap; this is purely a
+    # stall guard.
+    timeout: 30
