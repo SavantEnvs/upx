@@ -1,0 +1,36 @@
+# Target `upx-list` -- `upx -l`, which parses a packed file's UPX header and prints its contents
+# WITHOUT decompressing the payload. This is one of the three harnesses OSS-Fuzz builds for this
+# project (projects/upx/fuzzers/list_packed_file_fuzzer.cpp); SPEC 6.2 item 12 requires an OSS-Fuzz
+# project to ship all of them, and verify-repo cannot auto-enumerate this project's fuzzer list
+# (its build.sh loops over `$OUT/${fuzz_basename}`), so parity was established by hand against
+# google/oss-fuzz projects/upx/fuzzers/.
+#
+# It is a distinct surface from `upx-test` and `upx-unpack`: the header/format-detection parse runs
+# on its own here, so a malformed header reaches the reporting code paths without first having to
+# survive decompression.
+#
+# Like every target in this repo it is an in-process libFuzzer harness (mayhem/upx_fuzz.cpp, built
+# with -DUPX_FUZZ_MODE=UPX_FUZZ_MODE_LIST) rather than a raw file-input CLI target -- see
+# mayhem/Mayhemfile for why the raw form cannot work for UPX and produced the 155-edge run #4.
+# Measured locally, 60s, one core: 177,551 execs (2,910 exec/s), cov 2,470 edges, corpus 1 -> 213.
+# Reproduce a finding with /mayhem/upx-list-standalone <input>, or with the plain CLI:
+# /mayhem/upx-cli -l <input>.
+project: savantenvs/upx
+target: upx-list
+
+# The 5352-byte result of packing this repo's `tiny` ELF with `upx --best --lzma`. A packed
+# executable is required to get past UPX's format-detection gate at all; the mutated bytes
+# downstream of that gate are what drive the header parser.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx-list/testsuite
+
+cmds:
+  - cmd: /mayhem/upx-list
+    libfuzzer: true
+    # Above libFuzzer's 4096-byte default and comfortably above the 5352-byte seed, so mutations can
+    # grow the packed image without being truncated into instant rejects.
+    max_length: 65536
+    # Bounds ONE execution (libFuzzer's own default is 1200s). Listing is cheap; this is purely a
+    # stall guard.
+    timeout: 30
