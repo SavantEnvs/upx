@@ -1,0 +1,42 @@
+# Target `upx` -- the PACKER. Name and compression selection (`--best --lzma`) are preserved from the
+# retired mayhemheroes/upx integration so Mayhem's existing run history for `upx` stays attached to
+# the code path it was actually measuring. What changed is HOW the input reaches that code path.
+#
+# It used to be a raw file-input CLI target (`cmd: /mayhem/upx --best --lzma -o /tmp/packed @@`).
+# That never worked here. UPX exits 1 IDENTICALLY for "file is too small", "not an executable" and
+# "no such file" (verified in this repo's commit image), so Mayhem's file-input detection concluded
+# the target never reads the staged input and killed runs #1-#3 before fuzzing started
+# ("Your target runs but does not seem to use the file input specified in the Mayhemfile",
+# tests_run=0, edges=0). Run #4 only completed because the Mayhemfile pinned MFUZZ_COMPAT_LEVEL --
+# Mayhem's degraded compatibility execution mode -- and reported 155 edges, which is ~1.7% of the
+# 8,963 edges a SINGLE local execution of the sanitized binary already covers (of 97,359
+# instrumented; measured with a trace-pc-guard counting runtime). The MFUZZ_COMPAT_LEVEL pin is
+# gone, not re-tuned: it was treating the symptom.
+#
+# SPEC 6.2 item 11 ("prefer an instrumented harness (libFuzzer ...) so the target is genuinely
+# fuzzable") is the fix. /mayhem/upx is now an in-process libFuzzer harness (mayhem/upx_fuzz.cpp)
+# that calls UPX's own re-entrant upx_main() with exactly this argument shape. Measured locally,
+# 60s, one core: 30,479 execs (499 exec/s), cov 4,977 edges, corpus 1 -> 971 inputs.
+# Reproduce a finding with either /mayhem/upx-standalone <input> (run-once, no libFuzzer runtime)
+# or the plain CLI: /mayhem/upx-cli --best --lzma --force-overwrite -o /tmp/packed <input>.
+project: savantenvs/upx
+target: upx
+
+# Canonical two-entry seed directive (docs/seed-corpus.md). The seed is a minimal 8816-byte
+# `-static -nostdlib` x86-64 ELF built and verified in this repo's own commit image (packs cleanly,
+# exit 0) -- small enough to mutate cheaply while still clearing UPX's ELF format-detection gate,
+# which is the entry point to the packing code.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx/testsuite
+
+cmds:
+  - cmd: /mayhem/upx
+    libfuzzer: true
+    # Executables are larger than libFuzzer's 4096-byte default; leave room for the 8816-byte seed
+    # and its mutations to stay plausible ELFs rather than being truncated into instant rejects.
+    max_length: 65536
+    # Bounds ONE execution. `--best --lzma` is UPX's slowest compression path and the input length
+    # is bounded above, so nothing should come close (measured slowest unit: <1s); this only stops a
+    # pathological input from stalling the whole run, which libFuzzer's 1200s default would allow.
+    timeout: 30
