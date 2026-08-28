@@ -1,0 +1,52 @@
+# Historical target name AND cmd shape preserved from the retired mayhemheroes/upx integration
+# (root Mayhemfile: project upx, target upx, cmd `/upx --best --lzma @@`). Same target name, same
+# packing surface, so Mayhem's existing run history for `upx` stays attached to the code path it
+# was actually measuring.
+#
+# The retired integration wrote the packed output IN PLACE (no -o). To keep the exact `--best
+# --lzma @@` argument shape while guaranteeing nothing is written under /mayhem (which Mayhem
+# mounts READ-ONLY during coverage collection — an in-image write fails on every input, 0 edges,
+# while build + fuzz-smoke still pass silently), this adds an explicit `-o /tmp/...` output path.
+#
+# See mayhem/Mayhemfile_unpack for the companion `upx-unpack` target: UPX's own unpacker /
+# executable-format-detection code (not exercised here) is the historically more productive fuzz
+# surface (8 known defects: OOB read, improper input validation, uncaught exception) — that target
+# is additive, not a replacement for this one.
+project: savantenvs/upx
+target: upx
+
+# Canonical two-entry seed directive (docs/seed-corpus.md). This target shipped with NO testsuite at
+# all, which is why runs #1 and #2 died with "Your target runs but does not seem to use the file input
+# specified in the Mayhemfile" and 0 edges: starting from random bytes, UPX rejects every input as
+# "not an executable" before reading it, so Mayhem's file-input heuristic never sees behaviour change.
+# The seed is a minimal 8816-byte `-static -nostdlib` x86-64 ELF built and verified in this repo's own
+# commit image (packs cleanly: `upx --best --lzma tiny` exit 0) — small enough to mutate cheaply while
+# still clearing UPX's ELF format-detection gate, which is the entry point to the packing code.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx/testsuite
+
+cmds:
+  - cmd: /mayhem/upx --best --lzma -o /tmp/packed --force-overwrite @@
+    # Executables are far larger than Mayhem's default 8192-byte cap; leave room for the 8816-byte
+    # seed and its mutations to stay valid ELFs rather than being truncated into instant rejects.
+    max_length: 65536
+    # Mayhem's file-input detection probes the target with trivial inputs and compares behaviour; UPX
+    # returns exit 1 IDENTICALLY for "not a valid executable" and for a missing file (verified in this
+    # repo's commit image: 'A' -> 1, random bytes -> 1, nonexistent path -> 1), so the probe concludes
+    # the input file is unused and the run dies before fuzzing starts: "Your target runs but does not
+    # seem to use the file input specified in the Mayhemfile", tests_run=0, 0 edges. Runs #1-#3 all
+    # died here. The compat runner relaxes exactly that detection; it is the established fleet lever
+    # for a raw file CLI that errors on malformed probe inputs. Level 1 (not 2): scip documents 1 as
+    # the file-input-detection relaxation for this exact message; level 2 was tried on run #4 at
+    # this same commit and did NOT clear it (tests_run still 0). `@@` also moved to the END of the
+    # argument list to match the fleet norm — verified in the commit image that both orders pack
+    # byte-identically, so the move is behaviour-preserving.
+    env:
+      MFUZZ_COMPAT_LEVEL: "1"
+    # `--best --lzma` is UPX's slowest compression path, and the ASan-instrumented binary adds
+    # more on top — well past Mayhem's default 2s per-execution timeout. Run #1 died in the
+    # sanity phase ("Your target did not terminate within the default timeout (2 seconds)",
+    # tests_run=0, 0 edges) and Mayhem's auto-resolution raised it to 10s too late to save the
+    # run. Set it explicitly, and above auto-resolution's pick, so max-compression inputs finish.
+    timeout: 30

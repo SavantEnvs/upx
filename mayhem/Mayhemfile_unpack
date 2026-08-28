@@ -1,0 +1,44 @@
+# Companion to mayhem/Mayhemfile (target `upx`, the packer — historical name+cmd preserved for
+# run-history continuity). This is an ADDITIVE second target, not a replacement: UPX's own
+# unpacker / executable-format-detection code is the historically more productive fuzz surface (8
+# known defects there: OOB read, improper input validation, uncaught exception), so it gets its
+# own target rather than silently taking over the packer's name/history.
+project: savantenvs/upx
+target: upx-unpack
+
+# One local seed: a small static ELF packed with `upx --best --lzma` (see
+# mayhem/upx-unpack/testsuite/). A packed executable is required to get past UPX's format-
+# detection gate at all; the mutated bytes downstream of that gate (header fields, compressed
+# payload, filter/checksum data) are exactly what drives the unpacker's parsing code.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx-unpack/testsuite
+
+cmds:
+  # -d: decompress/unpack. Output MUST go to /tmp, never under /mayhem — Mayhem mounts the commit
+  # image READ-ONLY during coverage collection, so an output path under /mayhem fails to open on
+  # every input (0 edges, "Run Failed") while build + fuzz-smoke still pass silently.
+  - cmd: /mayhem/upx -d --force-overwrite -o /tmp/out @@
+    # REQUIRED: hello.packed is 275312 bytes, so Mayhem's default 8192-byte cap truncated the only
+    # seed this target had ("1 out of 1 testcases have been truncated"). A truncated packed ELF is
+    # not unpackable — verified in the commit image: intact hello.packed gives `upx -d` exit 0, the
+    # 8192-byte prefix gives exit 2 — so every execution was an instant reject and the run failed
+    # with "does not seem to use the file input", 0 edges. Sized to keep the seed whole.
+    max_length: 300000
+    # Decompression is far cheaper than the packer's `--best --lzma`, but the ASan-instrumented
+    # binary still clears 2s only intermittently on a loaded worker — the same sanity-phase
+    # timeout that zeroed run #1 of the `upx` target. 10s is Mayhem's own auto-resolution pick.
+    timeout: 10
+    # Mayhem's file-input detection probes the target with trivial inputs and compares behaviour; UPX
+    # returns exit 1 IDENTICALLY for "not a valid executable" and for a missing file (verified in this
+    # repo's commit image: 'A' -> 1, random bytes -> 1, nonexistent path -> 1), so the probe concludes
+    # the input file is unused and the run dies before fuzzing starts: "Your target runs but does not
+    # seem to use the file input specified in the Mayhemfile", tests_run=0, 0 edges. Runs #1-#3 all
+    # died here. The compat runner relaxes exactly that detection; it is the established fleet lever
+    # for a raw file CLI that errors on malformed probe inputs. Level 1 (not 2): scip documents 1 as
+    # the file-input-detection relaxation for this exact message; level 2 was tried on run #4 at
+    # this same commit and did NOT clear it (tests_run still 0). `@@` also moved to the END of the
+    # argument list to match the fleet norm — verified in the commit image that both orders pack
+    # byte-identically, so the move is behaviour-preserving.
+    env:
+      MFUZZ_COMPAT_LEVEL: "1"
