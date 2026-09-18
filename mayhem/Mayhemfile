@@ -1,0 +1,59 @@
+# Historical target name AND cmd shape preserved from the retired mayhemheroes/upx integration
+# (root Mayhemfile: project upx, target upx, cmd `/upx --best --lzma @@`). Same target name, same
+# packing surface, so Mayhem's existing run history for `upx` stays attached to the code path it
+# was actually measuring.
+#
+# The retired integration wrote the packed output IN PLACE (no -o). To keep the exact `--best
+# --lzma @@` argument shape while guaranteeing nothing is written under /mayhem (which Mayhem
+# mounts READ-ONLY during coverage collection — an in-image write fails on every input, 0 edges,
+# while build + fuzz-smoke still pass silently), this adds an explicit `-o /tmp/...` output path.
+#
+# BACKPORT NOTE: the live mayhem branch also ships a companion `upx-unpack` target
+# (mayhem/Mayhemfile_unpack). It is dropped here — the mayhemheroes project this backport
+# reproduces (owner mayhemheroes, project upx) never had an `upx-unpack` target at all, so there
+# is no anchor run/defect count to reproduce for it.
+project: savantenvs/upx
+target: upx-buggy-mhh-run-51
+
+# BACKPORT (mayhemheroes run 51 @ this repo's UPSTREAM commit): seeded with the mayhemheroes
+# run's own coverage corpus (mayhem/upx-buggy-mhh-run-51/testsuite/, downloaded from that run) —
+# real ELF-shaped inputs that already clear UPX's format-detection gate, the entry point to the
+# packing code this target exercises.
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/upx-buggy-mhh-run-51/testsuite
+
+cmds:
+  # -f (not --force-overwrite): this UPSTREAM commit predates the long-flag form (verified in
+  # this repo's commit image: `--force-overwrite` -> "unrecognized option").
+  #
+  # /mayhem/upx-wrap (not /mayhem/upx directly): src/work.cpp's do_one_file() rejects any input
+  # under 512 bytes via a path-based `lstat()` check BEFORE ever opening the file (verified with
+  # strace in the commit image: a sub-512-byte input gets only an lstat, never an open/read).
+  # Mayhem's own pre-flight sanity probes are smaller than that, so it sees upx never touch the
+  # probe file and aborts with "does not seem to use the file input specified in the Mayhemfile"
+  # before fuzzing starts — this reproduced at BOTH MFUZZ_COMPAT_LEVEL 1 and 2 (see the backport
+  # report), so the compat runner's usual relaxation does not cover this failure mode.
+  # mayhem/wrap-upx.c (built by build.sh into this ELF, NOT a shell script — Mayhem's fuzz-smoke
+  # requires an ELF cmd target) pads any input under 512 bytes before exec'ing the real upx; real
+  # corpus inputs (all far over 512 bytes already) pass through byte-for-byte unmodified.
+  - cmd: /mayhem/upx-wrap --best --lzma -o /tmp/packed -f @@
+    # Executables are far larger than Mayhem's default 8192-byte cap; leave room for the 8816-byte
+    # seed and its mutations to stay valid ELFs rather than being truncated into instant rejects.
+    max_length: 65536
+    env:
+      MFUZZ_COMPAT_LEVEL: "1"
+    # `--best --lzma` is UPX's slowest compression path, and the ASan-instrumented binary adds
+    # more on top — well past Mayhem's default 2s per-execution timeout. Run #1 died in the
+    # sanity phase ("Your target did not terminate within the default timeout (2 seconds)",
+    # tests_run=0, 0 edges) and Mayhem's auto-resolution raised it to 10s too late to save the
+    # run. Set it explicitly, and above auto-resolution's pick, so max-compression inputs finish.
+    timeout: 30
+    # ASan's shadow-memory + allocator reservations push the process's virtual memory footprint
+    # far past Mayhem's default per-execution memory_limit — run #3 (once the input-padding
+    # wrapper above got past the file-input-detection failure) hit "Your target runs out of
+    # virtual memory" on effectively every execution ("target crashes on every test case in the
+    # test suite and on the default test case"), a standard ASan-vs-fuzzer-memory-cap collision,
+    # not a real bug. 0 = unlimited (this fleet's ASan+UBSan build already bounds real crashes via
+    # sanitizer halting, not the memory cap).
+    memory_limit: 0
